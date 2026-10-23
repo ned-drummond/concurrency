@@ -1,6 +1,7 @@
 #include <atomic>
 #include <chrono>
 #include <iostream>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -19,9 +20,9 @@ public:
     bool try_pop(T& out);
 
 private:
-    alignas(64) T _queue[Capacity];
-    alignas(64) std::atomic<size_t> _producer_index = { 0 };
-    alignas(64) std::atomic<size_t> _consumer_index = { 0 };
+    alignas(std::hardware_destructive_interference_size) T _queue[Capacity];
+    alignas(std::hardware_destructive_interference_size) std::atomic<size_t> _producer_index = { 0 };
+    alignas(std::hardware_destructive_interference_size) std::atomic<size_t> _consumer_index = { 0 };
 };
 
 template<typename T, size_t Capacity>
@@ -54,7 +55,7 @@ bool SpscQueue<T, Capacity>::try_pop(T& out) {
 
 int main() {
     SpscQueue<int, 32> queue;
-    auto start = std::chrono::steady_clock::now();
+    const auto start = std::chrono::steady_clock::now();
 
     std::thread producer([&] {
         for (size_t i = 0; i < NUM_ITEMS; ++i) {
@@ -63,25 +64,19 @@ int main() {
     });
 
     std::thread consumer([&] {
-        size_t items_received = 0;
-        int prev_item {};
         int item {};
-
-        while (items_received != NUM_ITEMS) {
+        for (size_t i = 0; i < NUM_ITEMS; ++i) {
             while (!queue.try_pop(item)) {}
-            if (item != (prev_item + 1) && items_received != 0) throw std::runtime_error("Bad ordering. Item: " + std::to_string(item) + " prev item: " + std::to_string(prev_item));
-
-            prev_item = item;
-            ++items_received;
+            if (item != static_cast<int>(i)) throw std::runtime_error("Bad ordering., Item: " + std::to_string(i));
         }
     });
 
     producer.join();
     consumer.join();
 
-    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now() - start).count();
-    std::cout << double(ns) / NUM_ITEMS << "ns per item" << std::endl;
+    const auto stop = std::chrono::steady_clock::now();
+    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(stop - start).count();
+    std::cout << static_cast<double>(ns) / NUM_ITEMS << "ns per item" << std::endl;
 
     return 0;
 }
