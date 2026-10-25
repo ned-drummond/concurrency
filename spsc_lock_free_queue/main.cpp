@@ -1,16 +1,20 @@
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <iostream>
 #include <new>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 
 static constexpr size_t NUM_ITEMS = 100'000'000;
 
 template <typename T, size_t Capacity>
 class SpscQueue {
 public:
+    static_assert(std::has_single_bit(Capacity), "Capacity must be a power of 2");
+
     // Called only from the producer thread.
     // Returns false immediately if the queue is full.
     bool try_push(const T& value);
@@ -21,35 +25,31 @@ public:
 
 private:
     alignas(std::hardware_destructive_interference_size) T _queue[Capacity];
-    alignas(std::hardware_destructive_interference_size) std::atomic<size_t> _producer_index = { 0 };
-    alignas(std::hardware_destructive_interference_size) std::atomic<size_t> _consumer_index = { 0 };
+    alignas(std::hardware_destructive_interference_size) std::atomic<size_t> _total_pushed = { 0 };
+    alignas(std::hardware_destructive_interference_size) std::atomic<size_t> _total_popped = { 0 };
 };
 
 template<typename T, size_t Capacity>
 bool SpscQueue<T, Capacity>::try_push(const T& value) {
-    const auto producer_index = _producer_index.load(std::memory_order_relaxed);
-    const auto consumer_index = _consumer_index.load(std::memory_order_acquire);
+    const auto total_pushed = _total_pushed.load(std::memory_order_relaxed);
+    const auto total_popped = _total_popped.load(std::memory_order_acquire);
 
-    size_t size = 0;
-    if (producer_index > consumer_index) size = producer_index - consumer_index;
-    else if (consumer_index > producer_index) size = Capacity - (consumer_index - producer_index);
+    if ((total_pushed - total_popped) == Capacity) return false;
 
-    if (size == Capacity - 1) return false;
-
-    _queue[producer_index] = value;
-    _producer_index.store((producer_index + 1) % Capacity, std::memory_order_release);
+    _queue[total_pushed & (Capacity - 1)] = value;
+    _total_pushed.store(total_pushed + 1, std::memory_order_release);
     return true;
 }
 
 template<typename T, size_t Capacity>
 bool SpscQueue<T, Capacity>::try_pop(T& out) {
-    const auto producer_index = _producer_index.load(std::memory_order_acquire);
-    const auto consumer_index = _consumer_index.load(std::memory_order_relaxed);
+    const auto total_pushed = _total_pushed.load(std::memory_order_acquire);
+    const auto total_popped = _total_popped.load(std::memory_order_relaxed);
 
-    if (producer_index == consumer_index) return false;
+    if (total_pushed == total_popped) return false;
 
-    out = _queue[consumer_index];
-    _consumer_index.store((consumer_index + 1) % Capacity, std::memory_order_release);
+    out = _queue[total_popped & (Capacity - 1)];
+    _total_popped.store(total_popped + 1, std::memory_order_release);
     return true;
 }
 
