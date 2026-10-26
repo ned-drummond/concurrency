@@ -25,6 +25,8 @@ public:
     // Returns false immediately if the queue is empty.
     bool try_pop(T& out);
 
+    size_t size() const;
+
 private:
     // Written only by the producer (both vars on same cache line)
     alignas(std::hardware_destructive_interference_size) std::atomic<size_t> _total_pushed = { 0 };
@@ -63,6 +65,13 @@ bool SpscQueue<T, Capacity>::try_pop(T& out) {
     out = _queue[total_popped & (Capacity - 1)];
     _total_popped.store(total_popped + 1, std::memory_order_release);
     return true;
+}
+
+template<typename T, size_t Capacity>
+size_t SpscQueue<T, Capacity>::size() const {
+    const auto popped = _total_popped.load(std::memory_order_acquire);
+    const auto pushed = _total_pushed.load(std::memory_order_relaxed);
+    return pushed - popped;
 }
 
 int main() {
